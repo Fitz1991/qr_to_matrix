@@ -1,0 +1,33 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Позволяет запускать вручную
+
+jobs:
+  build:
+    runs-on: windows-latest  # GitHub использует Windows-сервер
+
+    steps:
+      - name: Скачать код из репозитория
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Установить зависимости
+        run: |
+          pip install pymupdf opencv-python pyzbar openpyxl Pillow numpy pyinstaller
+
+      - name: Собрать .exe
+        run: |
+          pyinstaller --onefile --windowed --name "QR_Extractor_NiceLabel" qr_extractor.py
+
+      - name: Сохранить готовый .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: QR_Extractor_NiceLabel
+          path: dist/QR_Extractor_NiceLabel.exe
