@@ -2,9 +2,6 @@ name: Build EXE
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build:
@@ -19,6 +16,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Generate version tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "v$(Get-Date -Format 'yyyy.MM.dd-HHmm')"
+          echo "TAG=$tag" >> $env:GITHUB_OUTPUT
+          echo "Generated tag: $tag"
+
       - name: Install dependencies
         run: |
           pip install pymupdf opencv-python pylibdmtx openpyxl Pillow numpy pyinstaller
@@ -28,13 +33,10 @@ jobs:
         run: |
           $dmtx_path = python -c "import pylibdmtx, os; print(os.path.dirname(pylibdmtx.__file__))"
           Write-Host "pylibdmtx path: $dmtx_path"
-          
-          # Найти DLL файлы
+
           $dlls = Get-ChildItem "$dmtx_path\*.dll" | ForEach-Object { "--add-binary `"$($_.FullName);pylibdmtx`"" }
-          Write-Host "DLLs found: $dlls"
-          
           $dll_args = $dlls -join " "
-          
+
           $cmd = "pyinstaller --onefile --windowed --name QR_Extractor_NiceLabel $dll_args qr_extractor.py"
           Write-Host "Running: $cmd"
           Invoke-Expression $cmd
@@ -42,12 +44,16 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QR_Extractor_NiceLabel
+          name: QR_Extractor_NiceLabel-${{ steps.version.outputs.TAG }}
           path: dist\QR_Extractor_NiceLabel.exe
 
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: "QR Extractor ${{ steps.version.outputs.TAG }}"
           files: dist\QR_Extractor_NiceLabel.exe
-          generate_release_notes: true
+          generate_release_notes: false
+          body: "Автоматическая сборка от ${{ steps.version.outputs.TAG }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
