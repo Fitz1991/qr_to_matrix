@@ -52,7 +52,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.TAG }}
           name: "QR Extractor ${{ steps.version.outputs.TAG }}"
-          files: dist\QR_Extractor_NiceLabel.exe
+          files: dist/QR_Extractor_NiceLabel.exe
           generate_release_notes: false
           body: "Автоматическая сборка от ${{ steps.version.outputs.TAG }}"
         env:
