@@ -1,56 +1,53 @@
-name: Build Windows EXE
+name: Build EXE
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
-
-permissions:
-  contents: write
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-      - name: Скачать код из репозитория
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Установить Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Установить зависимости
+      - name: Install dependencies
         run: |
-          pip install pymupdf opencv-python pyzbar openpyxl Pillow numpy pyinstaller
+          pip install pymupdf opencv-python pylibdmtx openpyxl Pillow numpy pyinstaller
 
-      - name: Найти DLL файлы pyzbar
+      - name: Find pylibdmtx DLLs and build EXE
+        shell: pwsh
         run: |
-          python -c "import pyzbar, os; print(os.path.dirname(pyzbar.__file__))"
+          $dmtx_path = python -c "import pylibdmtx, os; print(os.path.dirname(pylibdmtx.__file__))"
+          Write-Host "pylibdmtx path: $dmtx_path"
+          
+          # Найти DLL файлы
+          $dlls = Get-ChildItem "$dmtx_path\*.dll" | ForEach-Object { "--add-binary `"$($_.FullName);pylibdmtx`"" }
+          Write-Host "DLLs found: $dlls"
+          
+          $dll_args = $dlls -join " "
+          
+          $cmd = "pyinstaller --onefile --windowed --name QR_Extractor_NiceLabel $dll_args qr_extractor.py"
+          Write-Host "Running: $cmd"
+          Invoke-Expression $cmd
 
-      - name: Собрать .exe (с включением DLL)
-        run: |
-          $pyzbar_path = python -c "import pyzbar, os; print(os.path.dirname(pyzbar.__file__))"
-          pyinstaller --onefile --windowed --name "QR_Extractor_NiceLabel" `
-            --add-binary "$pyzbar_path\libiconv.dll;pyzbar" `
-            --add-binary "$pyzbar_path\libzbar-64.dll;pyzbar" `
-            qr_extractor.py
-        shell: powershell
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QR_Extractor_NiceLabel
+          path: dist\QR_Extractor_NiceLabel.exe
 
-      - name: Создать Release и опубликовать .exe
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1
-          name: "QR Extractor для NiceLabel v1.1"
-          body: |
-            📄 Программа для извлечения QR-кодов из PDF для использования в NiceLabel.
-            
-            **Исправлено:** ошибка с libiconv.dll
-            
-            **Как использовать:**
-            1. Скачайте QR_Extractor_NiceLabel.exe
-            2. Запустите — установка не нужна
-            3. Выберите PDF файл
-            4. Получите CSV и Excel с данными QR-кодов
-          files: dist/QR_Extractor_NiceLabel.exe
+          files: dist\QR_Extractor_NiceLabel.exe
+          generate_release_notes: true

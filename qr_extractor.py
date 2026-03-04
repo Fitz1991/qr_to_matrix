@@ -1,6 +1,7 @@
 """
-QR Code Extractor для NiceLabel
-================================
+DataMatrix / QR Code Extractor для NiceLabel
+=============================================
+Поддерживает: DataMatrix (Честный Знак), QR Code
 При первом запуске автоматически установит все необходимые библиотеки.
 Требования: Python 3.8+ (https://python.org)
 """
@@ -11,12 +12,12 @@ import importlib
 
 # ── Автоустановка зависимостей ──────────────────────────────────────────────
 REQUIRED = {
-    "fitz":     "pymupdf",
-    "cv2":      "opencv-python",
-    "pyzbar":   "pyzbar",
-    "openpyxl": "openpyxl",
-    "PIL":      "Pillow",
-    "numpy":    "numpy",
+    "fitz":       "pymupdf",
+    "cv2":        "opencv-python",
+    "pylibdmtx":  "pylibdmtx",
+    "openpyxl":   "openpyxl",
+    "PIL":        "Pillow",
+    "numpy":      "numpy",
 }
 
 def auto_install():
@@ -45,27 +46,36 @@ import csv
 import fitz
 import cv2
 import numpy as np
-try:
-    from pyzbar.pyzbar import decode as _pyzbar_decode
-    PYZBAR_OK = True
-except Exception:
-    PYZBAR_OK = False
-    _pyzbar_decode = None
-
-def decode(img):
-    if PYZBAR_OK and _pyzbar_decode:
-        return _pyzbar_decode(img)
-    return []
 from PIL import Image
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+# ── DataMatrix декодер (pylibdmtx) ──────────────────────────────────────────
+try:
+    from pylibdmtx.pylibdmtx import decode as dmtx_decode
+    DMTX_OK = True
+except Exception:
+    DMTX_OK = False
+    dmtx_decode = None
+
+# ── QR Code декодер (opencv встроенный) ─────────────────────────────────────
+def try_qr_opencv(img_cv):
+    det = cv2.QRCodeDetector()
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    for variant in [gray,
+                    cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+                    cv2.bitwise_not(cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1])]:
+        data, _, _ = det.detectAndDecode(variant)
+        if data:
+            return data
+    return None
 
 
 class QRExtractorApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("QR Code Extractor → NiceLabel")
-        self.root.geometry("640x540")
+        self.root.title("DataMatrix / QR Extractor → NiceLabel")
+        self.root.geometry("640x560")
         self.root.resizable(False, False)
         self.root.configure(bg="#f1f5f9")
         self.pdf_path   = tk.StringVar()
@@ -77,7 +87,7 @@ class QRExtractorApp:
         hdr = tk.Frame(self.root, bg="#1d4ed8", height=64)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        tk.Label(hdr, text="📄  QR Code Extractor  →  NiceLabel",
+        tk.Label(hdr, text="🏷  DataMatrix / QR  →  NiceLabel",
                  font=("Segoe UI", 13, "bold"), fg="white", bg="#1d4ed8").pack(expand=True)
 
         body = tk.Frame(self.root, bg="#f1f5f9", padx=24, pady=18)
@@ -88,16 +98,16 @@ class QRExtractorApp:
         tk.Entry(row1, textvariable=self.pdf_path, state="readonly",
                  font=("Segoe UI", 9), bg="white", relief="solid", bd=1
                  ).pack(side="left", fill="x", expand=True, ipady=5)
-        self._btn(row1, "Обзор…", self.choose_pdf, "#1d4ed8").pack(side="left", padx=(6, 0))
+        self._btn(row1, "Обзор...", self.choose_pdf, "#1d4ed8").pack(side="left", padx=(6, 0))
 
         self._section(body, "2.  Папка для сохранения результатов")
         row2 = tk.Frame(body, bg="#f1f5f9"); row2.pack(fill="x", pady=(4, 16))
         tk.Entry(row2, textvariable=self.output_dir, state="readonly",
                  font=("Segoe UI", 9), bg="white", relief="solid", bd=1
                  ).pack(side="left", fill="x", expand=True, ipady=5)
-        self._btn(row2, "Обзор…", self.choose_output, "#1d4ed8").pack(side="left", padx=(6, 0))
+        self._btn(row2, "Обзор...", self.choose_output, "#1d4ed8").pack(side="left", padx=(6, 0))
 
-        self.btn_start = self._btn(body, "▶   Начать извлечение QR-кодов",
+        self.btn_start = self._btn(body, "Начать извлечение кодов",
                                    self.start_extraction, "#15803d",
                                    font=("Segoe UI", 11, "bold"), pady=10)
         self.btn_start.pack(fill="x", pady=(0, 14))
@@ -110,7 +120,7 @@ class QRExtractorApp:
         log_wrap = tk.Frame(body, bg="#0f172a")
         log_wrap.pack(fill="both", expand=True)
         self.log = tk.Text(log_wrap, font=("Consolas", 9), bg="#0f172a",
-                           fg="#94a3b8", relief="flat", state="disabled", wrap="word", height=9)
+                           fg="#94a3b8", relief="flat", state="disabled", wrap="word", height=10)
         sb = tk.Scrollbar(log_wrap, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
         self.log.pack(side="left", fill="both", expand=True, padx=8, pady=6)
@@ -160,125 +170,89 @@ class QRExtractorApp:
         self.progress["value"] = 0
         threading.Thread(target=self._run_extraction, daemon=True).start()
 
-    def _try_decode_image(self, img_cv):
-        """Пробует несколько методов распознавания QR-кода."""
-        det = cv2.QRCodeDetector()
+    def _decode_page(self, pix, pn):
+        """Пробует распознать DataMatrix и QR на одном pixmap."""
 
-        # Метод 1: оригинал
-        data, _, _ = det.detectAndDecode(img_cv)
-        if data:
-            return data
+        # ── 1. DataMatrix через pylibdmtx ──────────────────────────────────
+        if DMTX_OK:
+            pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            results = dmtx_decode(pil_img, timeout=3000)
+            if results:
+                for r in results:
+                    data = r.data.decode("utf-8", errors="replace")
+                    self.log_msg(f"  Стр.{pn} [DataMatrix]: {data[:70]}{'...' if len(data)>70 else ''}", "green")
+                    self.results.append({"Страница": pn, "Тип": "DataMatrix", "Данные": data})
+                return True
 
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            # Попробуем grayscale
+            gray_pil = pil_img.convert("L")
+            results = dmtx_decode(gray_pil, timeout=3000)
+            if results:
+                for r in results:
+                    data = r.data.decode("utf-8", errors="replace")
+                    self.log_msg(f"  Стр.{pn} [DataMatrix]: {data[:70]}{'...' if len(data)>70 else ''}", "green")
+                    self.results.append({"Страница": pn, "Тип": "DataMatrix", "Данные": data})
+                return True
 
-        # Метод 2: grayscale
-        data, _, _ = det.detectAndDecode(gray)
-        if data:
-            return data
-
-        # Метод 3: увеличенный контраст
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        data, _, _ = det.detectAndDecode(enhanced)
-        if data:
-            return data
-
-        # Метод 4: бинаризация Otsu
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        data, _, _ = det.detectAndDecode(binary)
-        if data:
-            return data
-
-        # Метод 5: инвертированное изображение (белый QR на тёмном фоне)
-        inverted = cv2.bitwise_not(binary)
-        data, _, _ = det.detectAndDecode(inverted)
-        if data:
-            return data
-
-        # Метод 6: адаптивная бинаризация
-        adaptive = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 11, 2
+        # ── 2. QR Code через OpenCV ─────────────────────────────────────────
+        img_cv = cv2.imdecode(
+            np.frombuffer(pix.tobytes("png"), np.uint8),
+            cv2.IMREAD_COLOR
         )
-        data, _, _ = det.detectAndDecode(adaptive)
+        data = try_qr_opencv(img_cv)
         if data:
-            return data
+            self.log_msg(f"  Стр.{pn} [QR Code]: {data[:70]}{'...' if len(data)>70 else ''}", "green")
+            self.results.append({"Страница": pn, "Тип": "QR Code", "Данные": data})
+            return True
 
-        # Метод 7: заточка (sharpening)
-        kern = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-        sharpened = cv2.filter2D(gray, -1, kern)
-        data, _, _ = det.detectAndDecode(sharpened)
-        if data:
-            return data
-
-        return None
+        return False
 
     def _run_extraction(self):
         try:
             pdf   = self.pdf_path.get()
-            self.log_msg(f"📂 Файл: {os.path.basename(pdf)}")
+            self.log_msg(f"Файл: {os.path.basename(pdf)}")
+
+            if not DMTX_OK:
+                self.log_msg("ВНИМАНИЕ: pylibdmtx не загружен - DataMatrix не будет работать!", "red")
+            else:
+                self.log_msg("pylibdmtx OK - DataMatrix (Честный Знак) поддерживается", "green")
+
             doc   = fitz.open(pdf)
             total = len(doc)
-            self.log_msg(f"📄 Страниц: {total}")
-            self.log_msg(f"🔍 Используется усиленное распознавание (Честный Знак)...")
+            self.log_msg(f"Страниц: {total}")
             found = 0
-
-            # Пробуем разные масштабы рендеринга
-            zoom_levels = [6, 8, 4]  # 432dpi, 576dpi, 288dpi
 
             for i, page in enumerate(doc):
                 pn = i + 1
-                page_found = False
 
-                for zoom in zoom_levels:
-                    if page_found:
-                        break
+                # Сначала zoom=4 (~288 dpi)
+                pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), colorspace=fitz.csRGB)
+                ok = self._decode_page(pix, pn)
 
-                    mat = fitz.Matrix(zoom, zoom)
-                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                # Если не нашли - пробуем zoom=6 (~432 dpi)
+                if not ok:
+                    pix2 = page.get_pixmap(matrix=fitz.Matrix(6, 6), colorspace=fitz.csRGB)
+                    ok = self._decode_page(pix2, pn)
 
-                    # Попытка 1: pyzbar
-                    pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    decoded = decode(pil_img)
-                    if decoded:
-                        for obj in decoded:
-                            data = obj.data.decode("utf-8", errors="replace")
-                            self.results.append({"Страница": pn, "Тип": obj.type, "Данные": data})
-                            found += 1
-                            self.log_msg(f"  ✅ Стр.{pn} [{obj.type}]: {data[:70]}{'…' if len(data)>70 else ''}", "green")
-                        page_found = True
-                        break
-
-                    # Попытка 2: OpenCV с несколькими методами обработки
-                    img_cv = cv2.imdecode(
-                        np.frombuffer(pix.tobytes("png"), np.uint8),
-                        cv2.IMREAD_COLOR
-                    )
-                    data = self._try_decode_image(img_cv)
-                    if data:
-                        self.results.append({"Страница": pn, "Тип": "QRCODE", "Данные": data})
-                        found += 1
-                        self.log_msg(f"  ✅ Стр.{pn}: {data[:70]}{'…' if len(data)>70 else ''}", "green")
-                        page_found = True
-                        break
-
-                if not page_found:
-                    self.log_msg(f"  ⚠️  Стр.{pn}: не найден", "yellow")
+                if ok:
+                    found += 1
+                else:
+                    self.log_msg(f"  Стр.{pn}: не найден", "yellow")
 
                 self.progress["value"] = pn / total * 100
                 self.root.update_idletasks()
 
             doc.close()
-            self.log_msg(f"\n📊 Найдено: {found} QR-кодов из {total} страниц")
+            self.log_msg(f"\nНайдено: {found} кодов из {total} страниц")
 
             if self.results:
                 self._save_results()
             else:
-                self.log_msg("❌ QR-коды не обнаружены!", "red")
-                messagebox.showwarning("Результат", "QR-коды не найдены в документе.")
+                self.log_msg("Коды не обнаружены!", "red")
+                messagebox.showwarning("Результат", "Коды не найдены в документе.")
 
         except Exception as e:
-            self.log_msg(f"❌ Ошибка: {e}", "red")
+            self.log_msg(f"Ошибка: {e}", "red")
             messagebox.showerror("Ошибка", str(e))
         finally:
             self.btn_start.configure(state="normal", bg="#15803d")
@@ -287,16 +261,16 @@ class QRExtractorApp:
         out  = self.output_dir.get()
         base = os.path.splitext(os.path.basename(self.pdf_path.get()))[0]
 
-        csv_path = os.path.join(out, f"{base}_qr_codes.csv")
+        csv_path = os.path.join(out, f"{base}_codes.csv")
         with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=["Страница", "Тип", "Данные"])
             w.writeheader(); w.writerows(self.results)
-        self.log_msg(f"💾 CSV: {csv_path}", "blue")
+        self.log_msg(f"CSV: {csv_path}", "blue")
 
-        xlsx_path = os.path.join(out, f"{base}_qr_codes.xlsx")
+        xlsx_path = os.path.join(out, f"{base}_codes.xlsx")
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = "QR Коды"
+        ws.title = "Коды"
 
         thin   = Side(style="thin", color="CBD5E1")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -304,7 +278,7 @@ class QRExtractorApp:
         h_fill = PatternFill("solid", fgColor="1D4ED8")
         h_aln  = Alignment(horizontal="center", vertical="center")
 
-        for col, h in enumerate(["Страница", "Тип штрих-кода", "Данные QR-кода  (для NiceLabel)"], 1):
+        for col, h in enumerate(["Страница", "Тип кода", "Данные  (для NiceLabel)"], 1):
             c = ws.cell(row=1, column=col, value=h)
             c.font = h_font; c.fill = h_fill; c.alignment = h_aln; c.border = border
 
@@ -321,14 +295,14 @@ class QRExtractorApp:
         ws.column_dimensions["C"].width = 65
         ws.row_dimensions[1].height = 22
         wb.save(xlsx_path)
-        self.log_msg(f"💾 Excel: {xlsx_path}", "blue")
-        self.log_msg(f"\n✨ Готово!  Файлы сохранены в:\n   {out}", "green")
+        self.log_msg(f"Excel: {xlsx_path}", "blue")
+        self.log_msg(f"\nГотово! Файлы сохранены в:\n   {out}", "green")
 
         messagebox.showinfo("Готово!",
-            f"Извлечено QR-кодов: {len(self.results)}\n\n"
+            f"Извлечено кодов: {len(self.results)}\n\n"
             f"Сохранены файлы:\n"
-            f"  • {os.path.basename(csv_path)}\n"
-            f"  • {os.path.basename(xlsx_path)}\n\n"
+            f"  {os.path.basename(csv_path)}\n"
+            f"  {os.path.basename(xlsx_path)}\n\n"
             f"Папка: {out}")
 
 
