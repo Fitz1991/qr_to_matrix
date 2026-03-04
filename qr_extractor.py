@@ -45,7 +45,17 @@ import csv
 import fitz
 import cv2
 import numpy as np
-from pyzbar.pyzbar import decode
+try:
+    from pyzbar.pyzbar import decode as _pyzbar_decode
+    PYZBAR_OK = True
+except Exception:
+    PYZBAR_OK = False
+    _pyzbar_decode = None
+
+def decode(img):
+    if PYZBAR_OK and _pyzbar_decode:
+        return _pyzbar_decode(img)
+    return []
 from PIL import Image
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side

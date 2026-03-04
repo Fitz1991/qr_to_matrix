@@ -3,11 +3,14 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # Позволяет запускать вручную
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    runs-on: windows-latest  # GitHub использует Windows-сервер
+    runs-on: windows-latest
 
     steps:
       - name: Скачать код из репозитория
@@ -22,12 +25,32 @@ jobs:
         run: |
           pip install pymupdf opencv-python pyzbar openpyxl Pillow numpy pyinstaller
 
-      - name: Собрать .exe
+      - name: Найти DLL файлы pyzbar
         run: |
-          pyinstaller --onefile --windowed --name "QR_Extractor_NiceLabel" qr_extractor.py
+          python -c "import pyzbar, os; print(os.path.dirname(pyzbar.__file__))"
 
-      - name: Сохранить готовый .exe
-        uses: actions/upload-artifact@v4
+      - name: Собрать .exe (с включением DLL)
+        run: |
+          $pyzbar_path = python -c "import pyzbar, os; print(os.path.dirname(pyzbar.__file__))"
+          pyinstaller --onefile --windowed --name "QR_Extractor_NiceLabel" `
+            --add-binary "$pyzbar_path\libiconv.dll;pyzbar" `
+            --add-binary "$pyzbar_path\libzbar-64.dll;pyzbar" `
+            qr_extractor.py
+        shell: powershell
+
+      - name: Создать Release и опубликовать .exe
+        uses: softprops/action-gh-release@v2
         with:
-          name: QR_Extractor_NiceLabel
-          path: dist/QR_Extractor_NiceLabel.exe
+          tag_name: v1.1
+          name: "QR Extractor для NiceLabel v1.1"
+          body: |
+            📄 Программа для извлечения QR-кодов из PDF для использования в NiceLabel.
+            
+            **Исправлено:** ошибка с libiconv.dll
+            
+            **Как использовать:**
+            1. Скачайте QR_Extractor_NiceLabel.exe
+            2. Запустите — установка не нужна
+            3. Выберите PDF файл
+            4. Получите CSV и Excel с данными QR-кодов
+          files: dist/QR_Extractor_NiceLabel.exe
