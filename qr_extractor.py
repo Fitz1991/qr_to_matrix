@@ -160,6 +160,59 @@ class QRExtractorApp:
         self.progress["value"] = 0
         threading.Thread(target=self._run_extraction, daemon=True).start()
 
+    def _try_decode_image(self, img_cv):
+        """Пробует несколько методов распознавания QR-кода."""
+        det = cv2.QRCodeDetector()
+
+        # Метод 1: оригинал
+        data, _, _ = det.detectAndDecode(img_cv)
+        if data:
+            return data
+
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+        # Метод 2: grayscale
+        data, _, _ = det.detectAndDecode(gray)
+        if data:
+            return data
+
+        # Метод 3: увеличенный контраст
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        data, _, _ = det.detectAndDecode(enhanced)
+        if data:
+            return data
+
+        # Метод 4: бинаризация Otsu
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        data, _, _ = det.detectAndDecode(binary)
+        if data:
+            return data
+
+        # Метод 5: инвертированное изображение (белый QR на тёмном фоне)
+        inverted = cv2.bitwise_not(binary)
+        data, _, _ = det.detectAndDecode(inverted)
+        if data:
+            return data
+
+        # Метод 6: адаптивная бинаризация
+        adaptive = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 11, 2
+        )
+        data, _, _ = det.detectAndDecode(adaptive)
+        if data:
+            return data
+
+        # Метод 7: заточка (sharpening)
+        kern = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        sharpened = cv2.filter2D(gray, -1, kern)
+        data, _, _ = det.detectAndDecode(sharpened)
+        if data:
+            return data
+
+        return None
+
     def _run_extraction(self):
         try:
             pdf   = self.pdf_path.get()
@@ -167,34 +220,50 @@ class QRExtractorApp:
             doc   = fitz.open(pdf)
             total = len(doc)
             self.log_msg(f"📄 Страниц: {total}")
+            self.log_msg(f"🔍 Используется усиленное распознавание (Честный Знак)...")
             found = 0
 
-            for i, page in enumerate(doc):
-                pn  = i + 1
-                mat = fitz.Matrix(4, 4)
-                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-                pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                decoded = decode(pil_img)
+            # Пробуем разные масштабы рендеринга
+            zoom_levels = [6, 8, 4]  # 432dpi, 576dpi, 288dpi
 
-                if not decoded:
-                    img  = cv2.imdecode(np.frombuffer(pix.tobytes("png"), np.uint8), cv2.IMREAD_COLOR)
-                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                    kern = np.array([[0,-1,0],[-1,5,-1],[0,-1,0]])
-                    gray = cv2.filter2D(gray, -1, kern)
-                    det  = cv2.QRCodeDetector()
-                    data, _, _ = det.detectAndDecode(gray)
+            for i, page in enumerate(doc):
+                pn = i + 1
+                page_found = False
+
+                for zoom in zoom_levels:
+                    if page_found:
+                        break
+
+                    mat = fitz.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+
+                    # Попытка 1: pyzbar
+                    pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    decoded = decode(pil_img)
+                    if decoded:
+                        for obj in decoded:
+                            data = obj.data.decode("utf-8", errors="replace")
+                            self.results.append({"Страница": pn, "Тип": obj.type, "Данные": data})
+                            found += 1
+                            self.log_msg(f"  ✅ Стр.{pn} [{obj.type}]: {data[:70]}{'…' if len(data)>70 else ''}", "green")
+                        page_found = True
+                        break
+
+                    # Попытка 2: OpenCV с несколькими методами обработки
+                    img_cv = cv2.imdecode(
+                        np.frombuffer(pix.tobytes("png"), np.uint8),
+                        cv2.IMREAD_COLOR
+                    )
+                    data = self._try_decode_image(img_cv)
                     if data:
                         self.results.append({"Страница": pn, "Тип": "QRCODE", "Данные": data})
                         found += 1
                         self.log_msg(f"  ✅ Стр.{pn}: {data[:70]}{'…' if len(data)>70 else ''}", "green")
-                    else:
-                        self.log_msg(f"  ⚠️  Стр.{pn}: не найден", "yellow")
-                else:
-                    for obj in decoded:
-                        data = obj.data.decode("utf-8", errors="replace")
-                        self.results.append({"Страница": pn, "Тип": obj.type, "Данные": data})
-                        found += 1
-                        self.log_msg(f"  ✅ Стр.{pn} [{obj.type}]: {data[:70]}{'…' if len(data)>70 else ''}", "green")
+                        page_found = True
+                        break
+
+                if not page_found:
+                    self.log_msg(f"  ⚠️  Стр.{pn}: не найден", "yellow")
 
                 self.progress["value"] = pn / total * 100
                 self.root.update_idletasks()
